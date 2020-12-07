@@ -15,9 +15,14 @@ typedef struct {
     bool parity;
     bool address_given;
     bool pin_given;
+    // Used for writing address
     uint8_t address;
     uint8_t word[4];
+    // Used for send pin
     uint8_t pin[4];
+    // Used for auth
+    uint8_t rnd[7];
+    uint8_t frnd[4];
 
 } PACKED em4x70_data_t;
 

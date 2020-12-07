@@ -53,9 +53,23 @@ static int usage_lf_em4x70_send_pin(void) {
     PrintAndLogEx(NORMAL, "Usage:  lf em 4x70 send_pin [h] [p <pin>]");
     PrintAndLogEx(NORMAL, "Options:");
     PrintAndLogEx(NORMAL, "       h         - this help");
-    PrintAndLogEx(NORMAL, "       p <pinr>  - pin code (4 bytes hex)");
+    PrintAndLogEx(NORMAL, "       p <pin>  - pin code (4 bytes hex)");
     PrintAndLogEx(NORMAL, "Examples:");
     PrintAndLogEx(NORMAL, _YELLOW_("      lf em 4x70_send_pin p 11223344"));
+    PrintAndLogEx(NORMAL, "");
+    return PM3_SUCCESS;
+}
+
+static int usage_lf_em4x70_auth(void) {
+    PrintAndLogEx(NORMAL, "Send Rnd + f(rnd,k) to authenticate tag. Tag must be on antenna. ");
+    PrintAndLogEx(NORMAL, "");
+    PrintAndLogEx(NORMAL, "Usage:  lf em 4x70 auth [h] [r <rnd>] [f <f(rnd,k)>]");
+    PrintAndLogEx(NORMAL, "Options:");
+    PrintAndLogEx(NORMAL, "       h              - this help");
+    PrintAndLogEx(NORMAL, "       r <rnd>        - 56-bit random number code (7 bytes hex)");
+    PrintAndLogEx(NORMAL, "       f <f(rnd,k)>   - 28-bit auth (3.5 hex bytes)");
+    PrintAndLogEx(NORMAL, "Examples:");
+    PrintAndLogEx(NORMAL, _YELLOW_("      lf em 4x70_auth r 11223344556677 f 1122334X"));
     PrintAndLogEx(NORMAL, "");
     return PM3_SUCCESS;
 }
@@ -286,11 +300,78 @@ int CmdEM4x70SendPin(const char *Cmd) {
     return PM3_ESOFT;
 }
 
+int CmdEM4x70Auth(const char *Cmd) {
+
+    // Authenticate transponder
+    // Send 56-bit random number + pre-computed f(rnd, k) to transponder.
+    // Transponder will respond with a response
+
+    bool errors = false, brnd = false, bfrnd = false;
+    uint8_t cmdp = 0;
+
+    em4x70_data_t etd = {0};
+
+    while (param_getchar(Cmd, cmdp) != 0x00 && !errors) {
+        switch (tolower(param_getchar(Cmd, cmdp))) {
+
+            case 'h':
+                return usage_lf_em4x70_send_pin();
+            
+            case 'r': {
+                if (param_gethex(Cmd, cmdp + 1, etd.rnd, 14)) {
+                    PrintAndLogEx(FAILED, "\n  rnd has to be 14 hex symbols\n");
+                    return PM3_EINVARG;
+                }
+                brnd = true;
+                cmdp += 2;
+                break;
+            }
+            
+            case 'f': {
+                if (param_gethex(Cmd, cmdp + 1, etd.frnd, 8)) {
+                    PrintAndLogEx(FAILED, "\n  pin has to be 8 hex symbols\n");
+                    return PM3_EINVARG;
+                }
+                bfrnd = true;
+                cmdp += 2;
+                break;
+            }
+
+            default:
+                PrintAndLogEx(WARNING, "  Unknown parameter '%c'", param_getchar(Cmd, cmdp));
+                errors = true;
+                break;
+        }
+    }
+
+    // validation
+    if (errors || !brnd || !bfrnd)
+        return usage_lf_em4x70_auth();
+
+    clearCommandBuffer();
+    SendCommandNG(CMD_LF_EM4X70_AUTH, (uint8_t *)&etd, sizeof(etd));
+
+    PacketResponseNG resp;
+    if (!WaitForResponseTimeout(CMD_LF_EM4X70_AUTH, &resp, TIMEOUT)) {
+        PrintAndLogEx(WARNING, "timeout while waiting for reply.");
+        return PM3_ETIMEOUT;
+    }
+
+    if (resp.status) {
+        print_info_result(resp.data.asBytes);
+        return PM3_SUCCESS;
+    }
+
+    PrintAndLogEx(FAILED, "reading tag " _RED_("failed"));
+    return PM3_ESOFT;
+}
+
 static command_t CommandTable[] = {
     {"help",     CmdHelp,           AlwaysAvailable, "This help"},
     {"info",     CmdEM4x70Info,     IfPm3EM4x70,     "tag information EM4x70"},
     {"write",    CmdEM4x70Write,    IfPm3EM4x70,     "write EM4x70"},
     {"send_pin", CmdEM4x70SendPin,  IfPm3EM4x70,     "send pin EM4x70"},
+    {"auth",     CmdEM4x70Auth,     IfPm3EM4x70,     "authenticate EM4x70"},
     {NULL, NULL, NULL, NULL}
 };
 

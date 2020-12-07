@@ -42,15 +42,15 @@ static bool command_parity = true;
 
 /**
  * These IDs are from the EM4170 datasheet
- * Some versions of the chip require a fourth
+ * Some versions of the chip require a
  * (even) parity bit, others do not
  */
-#define EM4X70_COMMAND_ID                   0x1  // Verified
-#define EM4X70_COMMAND_UM1                  0x2  // Verified
+#define EM4X70_COMMAND_ID                   0x1
+#define EM4X70_COMMAND_UM1                  0x2
 #define EM4X70_COMMAND_AUTH                 0x3
-#define EM4X70_COMMAND_PIN                  0x4  // Verified
-#define EM4X70_COMMAND_WRITE                0x5  // Verified
-#define EM4X70_COMMAND_UM2                  0x7  // Verified
+#define EM4X70_COMMAND_PIN                  0x4
+#define EM4X70_COMMAND_WRITE                0x5
+#define EM4X70_COMMAND_UM2                  0x7
 
 static uint8_t gHigh = 0;
 static uint8_t gLow  = 0;
@@ -382,6 +382,60 @@ static bool check_ack(bool bliw) {
 
     return false;
 }
+
+//==============================================================================
+// auth functions
+//==============================================================================
+static int authenticate( uint8_t rnd[7], uint8_t frnd[4]) {
+
+    Dbprintf("RND: %02X %02X %02X %02X %02X %02X %02X", rnd[0], rnd[1], rnd[2], rnd[3], rnd[4], rnd[5], rnd[6]);
+    Dbprintf("FRND: %02X %02X %02X %02X", frnd[0], frnd[1], frnd[2], frnd[3]);
+
+    // writes <word> to specified <address>
+    if (find_listen_window(true)) {
+
+        // Send Authenticate Command
+        em4x70_send_nibble(EM4X70_COMMAND_AUTH, true);
+        
+        // Send 56-bit Random number
+        for(int i=0;i<7;i++) {
+            em4x70_send_byte(rnd[i]);
+        }
+        
+        // Send 7 x 0's
+        for(int i=0; i<7; i++) {
+            em4x70_send_bit(0);
+        }
+        
+        // Send 28-bit f(RN)
+
+        // Send first 24 bits
+        for(int i=0; i < 3; i++) {
+            em4x70_send_byte(frnd[i]);
+        }
+        // Send last 4 bits (no parity)
+        em4x70_send_nibble((frnd[3] >> 4) & 0xf, false);
+
+        // Receive header, 20-bit g(RN), LIW
+        uint8_t grnd[32] = {0};
+        int num = em4x70_receive(grnd);
+        if(num < 10) {
+            Dbprintf("Auth failed");
+            return PM3_ESOFT;
+        }
+        uint8_t response[3];
+        bits2bytes(grnd, 24, response);
+        Dbprintf("Auth Response: %02X %02X %02X", response[2], response[1], response[0]);
+        return PM3_SUCCESS;
+
+    } else {
+        Dbprintf("Failed to find listen window");
+    }
+
+    return PM3_ESOFT;
+}
+
+
 //==============================================================================
 // send_pin functions
 //==============================================================================
@@ -878,4 +932,40 @@ void em4x70_send_pin(em4x70_data_t *etd) {
     StopTicks();
     lf_finalize();
     reply_ng(CMD_LF_EM4X70_SEND_PIN, status, tag.data, sizeof(tag.data));
+}
+
+
+void em4x70_auth(em4x70_data_t *etd) {
+
+    uint8_t status = 0;
+    //Dbprintf("Sending PIN tag %02X %02X %02X %02X", etd->pin[0], etd->pin[1], etd->pin[2], etd->pin[3]);
+    command_parity = etd->parity;
+
+    init_tag();
+    EM4170_setup_read();
+
+    // Find the Tag
+    if (get_signalproperties() && find_EM4X70_Tag()) {
+        
+        // Read ID (required for send_pin command)
+        if(em4x70_read_id()) {
+            
+            // Authenticate and get tag response
+            status = authenticate(etd->rnd, etd->frnd) == PM3_SUCCESS;
+
+            if(status) {
+                // Read Tag
+                em4x70_read_id();
+                em4x70_read_um1();
+                em4x70_read_um2();
+            }
+        } else {
+            Dbprintf("Failed to read ID");
+        }
+
+    }
+
+    StopTicks();
+    lf_finalize();
+    reply_ng(CMD_LF_EM4X70_AUTH, status, tag.data, sizeof(tag.data));
 }
