@@ -513,6 +513,7 @@ typedef struct {
 #define CMD_LF_EM4X50_WIPE                                                0x0244
 #define CMD_LF_EM4X70_INFO                                                0x0250
 #define CMD_LF_EM4X70_WRITE                                               0x0251
+#define CMD_LF_EM4X70_SEND_PIN                                            0x0252
 
 // Sampling configuration for LF reader/sniffer
 #define CMD_LF_SAMPLING_SET_CONFIG                                        0x021D

@@ -23,13 +23,12 @@ static int CmdHelp(const char *Cmd);
 static int usage_lf_em4x70_info(void) {
     PrintAndLogEx(NORMAL, "Read all information of EM4x70. Tag must be on antenna.");
     PrintAndLogEx(NORMAL, "");
-    PrintAndLogEx(NORMAL, "Usage:  lf em 4x70_info [h] [v] [p <pwd>]");
+    PrintAndLogEx(NORMAL, "Usage:  lf em 4x70 info [h]");
     PrintAndLogEx(NORMAL, "Options:");
     PrintAndLogEx(NORMAL, "       h         - this help");
     PrintAndLogEx(NORMAL, "       p         - use even parity for commands");
     PrintAndLogEx(NORMAL, "Examples:");
     PrintAndLogEx(NORMAL, _YELLOW_("      lf em 4x70_info"));
-    PrintAndLogEx(NORMAL, _YELLOW_("      lf em 4x70_info p"));
     PrintAndLogEx(NORMAL, "");
     return PM3_SUCCESS;
 }
@@ -37,13 +36,26 @@ static int usage_lf_em4x70_info(void) {
 static int usage_lf_em4x70_write(void) {
     PrintAndLogEx(NORMAL, "Write EM4x70 word. Tag must be on antenna. ");
     PrintAndLogEx(NORMAL, "");
-    PrintAndLogEx(NORMAL, "Usage:  lf em 4x70_write [h] [a <address>] [w <data>]");
+    PrintAndLogEx(NORMAL, "Usage:  lf em 4x70 write [h] [a <address>] [w <data>]");
     PrintAndLogEx(NORMAL, "Options:");
     PrintAndLogEx(NORMAL, "       h         - this help");
     PrintAndLogEx(NORMAL, "       a <addr>  - memory address to write to (dec)");
     PrintAndLogEx(NORMAL, "       w <word>  - word to write (hex)");
     PrintAndLogEx(NORMAL, "Examples:");
     PrintAndLogEx(NORMAL, _YELLOW_("      lf em 4x70_write a 3 w c0de"));
+    PrintAndLogEx(NORMAL, "");
+    return PM3_SUCCESS;
+}
+
+static int usage_lf_em4x70_send_pin(void) {
+    PrintAndLogEx(NORMAL, "Send pin to tag, unlocking it. Tag must be on antenna. ");
+    PrintAndLogEx(NORMAL, "");
+    PrintAndLogEx(NORMAL, "Usage:  lf em 4x70 send_pin [h] [p <pin>]");
+    PrintAndLogEx(NORMAL, "Options:");
+    PrintAndLogEx(NORMAL, "       h         - this help");
+    PrintAndLogEx(NORMAL, "       p <pinr>  - pin code (4 bytes hex)");
+    PrintAndLogEx(NORMAL, "Examples:");
+    PrintAndLogEx(NORMAL, _YELLOW_("      lf em 4x70_send_pin p 11223344"));
     PrintAndLogEx(NORMAL, "");
     return PM3_SUCCESS;
 }
@@ -149,8 +161,7 @@ int CmdEM4x70Info(const char *Cmd) {
 
 int CmdEM4x70Write(const char *Cmd) {
 
-    // envoke reading of a EM4x70 tag which has to be on the antenna because
-    // decoding is done by the device (not on client side)
+    // write one word (16 bits) to the tag at given address (0-15)
 
     bool errors = false, bword = false, baddr = false;
     uint8_t cmdp = 0;
@@ -220,10 +231,66 @@ int CmdEM4x70Write(const char *Cmd) {
     return PM3_ESOFT;
 }
 
+int CmdEM4x70SendPin(const char *Cmd) {
+
+    // send pin code to device, unlocking it for writing
+
+    bool errors = false, bpin = false;
+    uint8_t cmdp = 0;
+
+    em4x70_data_t etd = {0};
+
+    while (param_getchar(Cmd, cmdp) != 0x00 && !errors) {
+        switch (tolower(param_getchar(Cmd, cmdp))) {
+
+            case 'h':
+                return usage_lf_em4x70_send_pin();
+            
+            case 'p': {
+                if (param_gethex(Cmd, cmdp + 1, etd.pin, 8)) {
+                    PrintAndLogEx(FAILED, "\n  pin has to be 8 hex symbols\n");
+                    return PM3_EINVARG;
+                }
+                etd.pin_given = true;
+                bpin = true;
+                cmdp += 2;
+                break;
+            }
+            
+            default:
+                PrintAndLogEx(WARNING, "  Unknown parameter '%c'", param_getchar(Cmd, cmdp));
+                errors = true;
+                break;
+        }
+    }
+
+    // validation
+    if (errors || !bpin)
+        return usage_lf_em4x70_send_pin();
+
+    clearCommandBuffer();
+    SendCommandNG(CMD_LF_EM4X70_SEND_PIN, (uint8_t *)&etd, sizeof(etd));
+
+    PacketResponseNG resp;
+    if (!WaitForResponseTimeout(CMD_LF_EM4X70_SEND_PIN, &resp, TIMEOUT)) {
+        PrintAndLogEx(WARNING, "timeout while waiting for reply.");
+        return PM3_ETIMEOUT;
+    }
+
+    if (resp.status) {
+        print_info_result(resp.data.asBytes);
+        return PM3_SUCCESS;
+    }
+
+    PrintAndLogEx(FAILED, "reading tag " _RED_("failed"));
+    return PM3_ESOFT;
+}
+
 static command_t CommandTable[] = {
-    {"help",   CmdHelp,         AlwaysAvailable, "This help"},
-    {"info",   CmdEM4x70Info,   IfPm3EM4x70,     "tag information EM4x70"},
-    {"write",  CmdEM4x70Write,  IfPm3EM4x70,     "write EM4x70"},
+    {"help",     CmdHelp,           AlwaysAvailable, "This help"},
+    {"info",     CmdEM4x70Info,     IfPm3EM4x70,     "tag information EM4x70"},
+    {"write",    CmdEM4x70Write,    IfPm3EM4x70,     "write EM4x70"},
+    {"send_pin", CmdEM4x70SendPin,  IfPm3EM4x70,     "send pin EM4x70"},
     {NULL, NULL, NULL, NULL}
 };
 

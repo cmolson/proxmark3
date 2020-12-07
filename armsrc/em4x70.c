@@ -29,7 +29,7 @@ static bool command_parity = true;
 #define EM4X70_T_TAG_DIV                   224 // Divergency Time
 #define EM4X70_T_TAG_AUTH                 4224 // Authentication Time
 #define EM4X70_T_TAG_WEE                  3072 // EEPROM write Time
-#define EM4X70_T_TAG_TWALB                 128 // Write Access Time of Lock Bits
+#define EM4X70_T_TAG_TWALB                 672 // Write Access Time of Lock Bits
 
 #define EM4X70_T_WAITING_FOR_SNGLLIW       160   // Unsure
 
@@ -45,12 +45,12 @@ static bool command_parity = true;
  * Some versions of the chip require a fourth
  * (even) parity bit, others do not
  */
-#define EM4X70_COMMAND_ID                   0x1
-#define EM4X70_COMMAND_UM1                  0x2
+#define EM4X70_COMMAND_ID                   0x1  // Verified
+#define EM4X70_COMMAND_UM1                  0x2  // Verified
 #define EM4X70_COMMAND_AUTH                 0x3
-#define EM4X70_COMMAND_PIN                  0x4
-#define EM4X70_COMMAND_WRITE                0x5
-#define EM4X70_COMMAND_UM2                  0x7
+#define EM4X70_COMMAND_PIN                  0x4  // Verified
+#define EM4X70_COMMAND_WRITE                0x5  // Verified
+#define EM4X70_COMMAND_UM2                  0x7  // Verified
 
 static uint8_t gHigh = 0;
 static uint8_t gLow  = 0;
@@ -66,6 +66,9 @@ static int em4x70_receive(uint8_t *bits);
 static bool find_listen_window(bool command);
 static void em4x70_send_nibble(uint8_t command, bool with_parity);
 static void em4x70_send_words(const uint8_t bytes[2]);
+static void em4x70_send_byte(uint8_t byte);
+static void em4x70_send_bit(int bit);
+//tatic void em4x70_send_byte_lsb(uint8_t byte);
 
 static void init_tag(void) {
     memset(tag.data, 0x00, sizeof(tag.data)/sizeof(tag.data[0]));
@@ -174,7 +177,7 @@ static bool get_signalproperties(void) {
  * prints the timing from 1->0->1... for LIW_TEST_LENGTH
  * 
  */ 
-/*#define LIW_TEST_LENGTH 364
+/*#define LIW_TEST_LENGTH 128
 static void record_liw(void) {
 
     uint32_t intervals[LIW_TEST_LENGTH];
@@ -379,6 +382,58 @@ static bool check_ack(bool bliw) {
 
     return false;
 }
+//==============================================================================
+// send_pin functions
+//==============================================================================
+static int send_pin( uint8_t pin[4]) {
+
+    // writes <word> to specified <address>
+    if (find_listen_window(true)) {
+
+        // send PIN command
+        em4x70_send_nibble(EM4X70_COMMAND_PIN, true);
+
+        // --> Send TAG ID (4-7)
+        for(int i=0; i < 4; i++) {
+            em4x70_send_byte(tag.data[7-i]);
+            //Dbprintf("Sending TAG %02X", tag.data[7-i]);
+        }
+
+        // --> Send PIN
+        for(int i=0; i < 4; i++) {
+            em4x70_send_byte(pin[i]);
+            //Dbprintf("Sending PIN %02X", pin[i]);
+        }
+
+        // Wait TWALB
+        WaitTicks(TICKS_PER_FC * EM4X70_T_TAG_TWALB);
+
+        // <-- Receive ACK
+        if (check_ack(false)) {
+
+            // <w> Writes Lock Bits
+            WaitTicks(TICKS_PER_FC * EM4X70_T_TAG_WEE);
+            // <-- Header + ID
+            uint8_t tag_id[64];
+            int num  = em4x70_receive(tag_id);
+            if(num < 32) {
+                Dbprintf("Invalid ID Received");
+                return PM3_ESOFT;
+            }
+            bits2bytes(tag_id, num, &tag.data[4]);
+            return PM3_SUCCESS;
+
+        } else {
+            Dbprintf("Failed first ack");
+        }
+
+
+    } else {
+        Dbprintf("Failed to find listen window");
+    }
+
+    return PM3_ESOFT;
+}
 
 //==============================================================================
 // write functions
@@ -424,6 +479,24 @@ static int write(uint8_t word[2], uint8_t address) {
 
     return PM3_ESOFT;
 }
+
+static void em4x70_send_byte(uint8_t byte) {
+
+    // send byte (without parity)
+
+    for (int i = 0; i < 8; i++)
+        em4x70_send_bit((byte >> (7 - i)) & 1);
+
+}
+
+/*static void em4x70_send_byte_lsb(uint8_t byte) {
+
+    // send byte (without parity)
+
+    for (int i = 0; i < 8; i++)
+        em4x70_send_bit((byte>>i) & 1);
+
+}*/
 
 static void em4x70_send_words(const uint8_t bytes[2]) {
 
@@ -747,16 +820,6 @@ void em4x70_write(em4x70_data_t *etd) {
 
         status = write(etd->word, etd->address) == PM3_SUCCESS;
 
-        /*
-        for(int i = 0; i<= 0x0F; i++) {
-            if(find_listen_window(true)) {
-                em4x70_send_nibble(i, false);
-                record_liw();
-                Dbprintf("Attempt command %02X", i);
-            }
-        }
-        */
-
         if(status) {
             // Read Tag
             em4x70_read_id();
@@ -769,4 +832,50 @@ void em4x70_write(em4x70_data_t *etd) {
     StopTicks();
     lf_finalize();
     reply_ng(CMD_LF_EM4X70_WRITE, status, tag.data, sizeof(tag.data));
+}
+
+
+void em4x70_send_pin(em4x70_data_t *etd) {
+
+    uint8_t status = 0;
+    Dbprintf("Sending PIN tag %02X %02X %02X %02X", etd->pin[0], etd->pin[1], etd->pin[2], etd->pin[3]);
+    command_parity = etd->parity;
+
+    init_tag();
+    EM4170_setup_read();
+
+    // Find the Tag
+    if (get_signalproperties() && find_EM4X70_Tag()) {
+        
+        // Read ID (required for send_pin command)
+        if(em4x70_read_id()) {
+            
+            // Send PIN
+            status = send_pin(etd->pin) == PM3_SUCCESS;
+
+            /*
+            for(int i = 0; i<= 0x0F; i++) {
+                if(find_listen_window(true)) {
+                    em4x70_send_nibble(i, false);
+                    record_liw();
+                    Dbprintf("Attempt command %02X", i);
+                }
+            }
+            */
+
+            if(status) {
+                // Read Tag
+                em4x70_read_id();
+                em4x70_read_um1();
+                em4x70_read_um2();
+            }
+        } else {
+            Dbprintf("Failed to read ID");
+        }
+
+    }
+
+    StopTicks();
+    lf_finalize();
+    reply_ng(CMD_LF_EM4X70_SEND_PIN, status, tag.data, sizeof(tag.data));
 }
