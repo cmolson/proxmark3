@@ -112,7 +112,7 @@ static bool get_signalproperties(void) {
     // calculate signal properties (mean amplitudes) from measured data:
     // 32 amplitudes (maximum values) -> mean amplitude value -> gHigh -> gLow
     bool signal_found = false;
-    int no_periods = 32, pct = 25, noise = 140; // pct originally 75, found 25-50 was working better for me
+    int no_periods = 32, pct = 50, noise = 140; // pct originally 75, found 25-50 was working better for me
     uint8_t sample_ref = 127;
     uint8_t sample_max_mean = 0;
     uint8_t sample_max[no_periods];
