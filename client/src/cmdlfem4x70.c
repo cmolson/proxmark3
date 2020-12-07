@@ -34,6 +34,20 @@ static int usage_lf_em4x70_info(void) {
     return PM3_SUCCESS;
 }
 
+static int usage_lf_em4x70_write(void) {
+    PrintAndLogEx(NORMAL, "Write EM4x70 word. Tag must be on antenna. ");
+    PrintAndLogEx(NORMAL, "");
+    PrintAndLogEx(NORMAL, "Usage:  lf em 4x70_write [h] [a <address>] [w <data>]");
+    PrintAndLogEx(NORMAL, "Options:");
+    PrintAndLogEx(NORMAL, "       h         - this help");
+    PrintAndLogEx(NORMAL, "       a <addr>  - memory address to write to (dec)");
+    PrintAndLogEx(NORMAL, "       w <word>  - word to write (hex)");
+    PrintAndLogEx(NORMAL, "Examples:");
+    PrintAndLogEx(NORMAL, _YELLOW_("      lf em 4x70_write a 3 w c0de"));
+    PrintAndLogEx(NORMAL, "");
+    return PM3_SUCCESS;
+}
+
 static void print_info_result(uint8_t *data) {
 
     PrintAndLogEx(NORMAL, "");
@@ -133,9 +147,83 @@ int CmdEM4x70Info(const char *Cmd) {
     return PM3_ESOFT;
 }
 
+int CmdEM4x70Write(const char *Cmd) {
+
+    // envoke reading of a EM4x70 tag which has to be on the antenna because
+    // decoding is done by the device (not on client side)
+
+    bool errors = false, bword = false, baddr = false;
+    uint8_t cmdp = 0;
+
+    em4x70_data_t etd = {0};
+
+    while (param_getchar(Cmd, cmdp) != 0x00 && !errors) {
+        switch (tolower(param_getchar(Cmd, cmdp))) {
+
+            case 'h':
+                return usage_lf_em4x70_write();
+            
+            case 'p':
+                etd.parity = true;
+                cmdp +=1;
+                break;
+            
+            case 'w': {
+                if (param_gethex(Cmd, cmdp + 1, etd.word, 4)) {
+                    PrintAndLogEx(FAILED, "\n  word has to be 4 hex symbols\n");
+                    return PM3_EINVARG;
+                }
+                bword = true;
+                cmdp += 2;
+                break;
+            }
+            
+            case 'a': {
+                param_getdec(Cmd, cmdp + 1, &etd.address);
+
+                // validation
+                if (etd.address > 15) {
+                    PrintAndLogEx(FAILED, "\n  error, address has to be in range [0-15]\n");
+                    return PM3_EINVARG;
+                }
+                baddr = true;
+                cmdp += 2;
+                break;
+            }
+            
+            default:
+                PrintAndLogEx(WARNING, "  Unknown parameter '%c'", param_getchar(Cmd, cmdp));
+                errors = true;
+                break;
+        }
+    }
+
+    // validation
+    if (errors || !bword || !baddr)
+        return usage_lf_em4x70_write();
+
+    clearCommandBuffer();
+    SendCommandNG(CMD_LF_EM4X70_WRITE, (uint8_t *)&etd, sizeof(etd));
+
+    PacketResponseNG resp;
+    if (!WaitForResponseTimeout(CMD_LF_EM4X70_WRITE, &resp, TIMEOUT)) {
+        PrintAndLogEx(WARNING, "timeout while waiting for reply.");
+        return PM3_ETIMEOUT;
+    }
+
+    if (resp.status) {
+        print_info_result(resp.data.asBytes);
+        return PM3_SUCCESS;
+    }
+
+    PrintAndLogEx(FAILED, "reading tag " _RED_("failed"));
+    return PM3_ESOFT;
+}
+
 static command_t CommandTable[] = {
     {"help",   CmdHelp,         AlwaysAvailable, "This help"},
     {"info",   CmdEM4x70Info,   IfPm3EM4x70,     "tag information EM4x70"},
+    {"write",  CmdEM4x70Write,  IfPm3EM4x70,     "write EM4x70"},
     {NULL, NULL, NULL, NULL}
 };
 

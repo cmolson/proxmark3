@@ -13,6 +13,10 @@
 
 typedef struct {
     bool parity;
+    bool address_given;
+    uint8_t address;
+    uint8_t word[4];
+
 } PACKED em4x70_data_t;
 
 #endif /* EM4X70_H__ */

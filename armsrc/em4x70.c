@@ -45,12 +45,12 @@ static bool command_parity = true;
  * Some versions of the chip require a fourth
  * (even) parity bit, others do not
  */
-#define EM4X70_COMMAND_ID                   0x01
-#define EM4X70_COMMAND_UM1                  0x02
-#define EM4X70_COMMAND_AUTH                 0x03
-#define EM4X70_COMMAND_PIN                  0x04
-#define EM4X70_COMMAND_WRITE                0x05
-#define EM4X70_COMMAND_UM2                  0x07
+#define EM4X70_COMMAND_ID                   0x1
+#define EM4X70_COMMAND_UM1                  0x2
+#define EM4X70_COMMAND_AUTH                 0x3
+#define EM4X70_COMMAND_PIN                  0x4
+#define EM4X70_COMMAND_WRITE                0x5
+#define EM4X70_COMMAND_UM2                  0x7
 
 static uint8_t gHigh = 0;
 static uint8_t gLow  = 0;
@@ -64,6 +64,8 @@ static uint8_t bits2byte(uint8_t *bits, int length);
 static void bits2bytes(uint8_t *bits, int length, uint8_t *out);
 static int em4x70_receive(uint8_t *bits);
 static bool find_listen_window(bool command);
+static void em4x70_send_nibble(uint8_t command, bool with_parity);
+static void em4x70_send_words(const uint8_t bytes[2]);
 
 static void init_tag(void) {
     memset(tag.data, 0x00, sizeof(tag.data)/sizeof(tag.data[0]));
@@ -96,6 +98,8 @@ static void EM4170_setup_read(void) {
     // Start the timer
     StartTicks();
 
+    SpinDelay(10);
+
     // Watchdog hit
     WDT_HIT();
 }
@@ -105,7 +109,7 @@ static bool get_signalproperties(void) {
     // calculate signal properties (mean amplitudes) from measured data:
     // 32 amplitudes (maximum values) -> mean amplitude value -> gHigh -> gLow
     bool signal_found = false;
-    int no_periods = 32, pct = 50, noise = 140; // pct originally 75, found 50 was working better for me
+    int no_periods = 32, pct = 25, noise = 140; // pct originally 75, found 25-50 was working better for me
     uint8_t sample_ref = 127;
     uint8_t sample_max_mean = 0;
     uint8_t sample_max[no_periods];
@@ -170,7 +174,7 @@ static bool get_signalproperties(void) {
  * prints the timing from 1->0->1... for LIW_TEST_LENGTH
  * 
  */ 
-/*#define LIW_TEST_LENGTH 64
+/*#define LIW_TEST_LENGTH 364
 static void record_liw(void) {
 
     uint32_t intervals[LIW_TEST_LENGTH];
@@ -314,19 +318,153 @@ static void em4x70_send_bit(int bit) {
 }
 
 
+static bool check_ack(bool bliw) {
+
+    // returns true if signal structue corresponds to ACK, anything else is
+    // counted as NAK (-> false)
+    // Only relevant for pasword writing function:
+    // If <bliw> is true then within the single listen window right after the
+    // ack signal a RM request has to be sent.
+    
+    //AT91C_BASE_TC0->TC_CCR = AT91C_TC_SWTRG;
+    uint32_t start_ticks = GetTicks();
+    while (GetTicks()-start_ticks < TICKS_PER_FC * 4 * EM4X70_T_TAG_FULL_PERIOD) {
+
+        /*
+            ACK
+              64 (48+16)
+              64 (48+16)
+            NACK
+              64 (48+16)
+              48 (32+16)
+        */
+        if (check_pulse_length(get_pulse_length(), 2 * EM4X70_T_TAG_FULL_PERIOD, EM4X70_TAG_TOLERANCE)) {
+
+            // The received signal is either ACK or NAK.
+
+            if (check_pulse_length(get_pulse_length(), 2 * EM4X70_T_TAG_FULL_PERIOD, EM4X70_TAG_TOLERANCE)) {
+
+                // Now the signal must be ACK.
+
+                if (!bliw) {
+
+                    return true;
+
+                } /*else {
+
+                    // send RM request after ack signal
+
+                    // wait for 2 bits (remaining "bit" of ACK signal + first
+                    // "bit" of listen window)
+                    wait_timer(FPGA_TIMER_0, T0 * 2 * EM4X50_T_TAG_FULL_PERIOD);
+
+                    // check for listen window (if first bit cannot be interpreted
+                    // as a valid bit it must belong to a listen window)
+                    if (get_next_bit() == EM4X50_BIT_OTHER) {
+
+                        // send RM for request mode
+                        em4x50_send_bit(0);
+                        em4x50_send_bit(0);
+
+                        return true;
+                    }*/
+                //}
+            } else {
+
+                // It's NAK -> stop searching
+                break;
+            }
+        }
+    }
+
+    return false;
+}
+
+//==============================================================================
+// write functions
+//==============================================================================
+static int write(uint8_t word[2], uint8_t address) {
+
+    // writes <word> to specified <address>
+
+    if (find_listen_window(true)) {
+
+        // send write command
+        em4x70_send_nibble(EM4X70_COMMAND_WRITE, true);
+
+        // send address data with parity  bit
+        em4x70_send_nibble(address, true);
+
+        // send data
+        em4x70_send_words(word);
+
+        WaitTicks(TICKS_PER_FC * EM4X70_T_TAG_TWA);
+
+        // look for ACK sequence
+        if (check_ack(false)) {
+
+            // now EM4x50 needs T0 * EM4X50_T_TAG_TWEE (EEPROM write time)
+            // for saving data and should return with ACK
+            WaitTicks(TICKS_PER_FC * EM4X70_T_TAG_WEE);
+            if (check_ack(false)) {
+
+                return PM3_SUCCESS;
+            } else {
+                Dbprintf("Failed second ack");
+            }
+
+        } else {
+            Dbprintf("Failed first ack");
+        }
+
+
+    } else {
+        Dbprintf("Failed to find listen window");
+    }
+
+    return PM3_ESOFT;
+}
+
+static void em4x70_send_words(const uint8_t bytes[2]) {
+
+    // Splt into nibbles
+    uint8_t nibbles[4];
+    uint8_t j = 0;
+    for(int i = 0; i < 2; i++) {
+        nibbles[j++] = (bytes[i] >> 4) & 0xf;
+        nibbles[j++] = bytes[i] & 0xf;
+    }
+
+    // send 16 bit word with parity bits according to EM4x70 datasheet
+    // sent as 4 x nibbles (4 bits + parity)
+    for (int i = 0; i < 4; i++) {
+        em4x70_send_nibble(nibbles[i], true);
+        //Dbprintf("Sending %X", nibbles[i]);
+    }
+
+    // send column parities (4 bit)
+    em4x70_send_nibble(nibbles[0] ^ nibbles[1] ^ nibbles[2] ^ nibbles[3], false);
+    //Dbprintf("Sending checksum %X", nibbles[0] ^ nibbles[1] ^ nibbles[2] ^ nibbles[3]);
+    // send final stop bit (always "0")
+    em4x70_send_bit(0);
+}
+
 /**
- * em4x70_send_command without parity
+ * em4x70_send_nibble
+ * 
+ *  sends 4 bits of data + 1 bit of parity (with_parity)
+ * 
  */
-static void em4170_send_command(uint8_t command) {
+static void em4x70_send_nibble(uint8_t nibble, bool with_parity) {
     int parity = 0;
     
     for (int i = 0; i < 4; i++) {
-        int bit = (command >> (3 - i)) & 1;
+        int bit = (nibble >> (3 - i)) & 1;
         em4x70_send_bit(bit);
         parity ^= bit;
     }
 
-    if(command_parity)
+    if(with_parity)
         em4x70_send_bit(parity);
 
 }
@@ -353,7 +491,7 @@ static bool find_listen_window(bool command) {
                              * 
                              *   I've found between 4-5 quarter periods (32-40) works best
                              */
-                            WaitTicks(TICKS_PER_FC * 5 * EM4X70_T_TAG_QUARTER_PERIOD);
+                            WaitTicks(TICKS_PER_FC * 4 * EM4X70_T_TAG_QUARTER_PERIOD);
                             // Send RM Command
                             em4x70_send_bit(0);
                             em4x70_send_bit(0);
@@ -426,7 +564,7 @@ static bool em4x70_read_id(void) {
 
     if(find_listen_window(true)) {
         uint8_t bits[64] = {0};
-        em4170_send_command(EM4X70_COMMAND_ID);
+        em4x70_send_nibble(EM4X70_COMMAND_ID, command_parity);
         int num = em4x70_receive(bits);
         if(num < 32) {
             Dbprintf("Invalid ID Received");
@@ -446,7 +584,7 @@ static bool em4x70_read_id(void) {
 static bool em4x70_read_um1(void) {
     if(find_listen_window(true)) {
         uint8_t bits[64] = {0};
-        em4170_send_command(EM4X70_COMMAND_UM1);
+        em4x70_send_nibble(EM4X70_COMMAND_UM1, command_parity);
         int num = em4x70_receive(bits);
         if(num < 32) {
             Dbprintf("Invalid UM1 data received");
@@ -467,7 +605,7 @@ static bool em4x70_read_um1(void) {
 static bool em4x70_read_um2(void) {
     if(find_listen_window(true)) {
         uint8_t bits[64] = {0};
-        em4170_send_command(EM4X70_COMMAND_UM2);
+        em4x70_send_nibble(EM4X70_COMMAND_UM2, command_parity);
         int num = em4x70_receive(bits);
         if(num < 64) {
             Dbprintf("Invalid UM2 data received");
@@ -480,7 +618,7 @@ static bool em4x70_read_um2(void) {
 }
 
 static bool find_EM4X70_Tag(void) {
-    Dbprintf("%s: Start", __func__);
+    // Dbprintf("%s: Start", __func__);
     // function is used to check wether a tag on the proxmark is an
     // EM4170 tag or not -> speed up "lf search" process
     return find_listen_window(false);
@@ -591,4 +729,44 @@ void em4x70_info(em4x70_data_t *etd) {
     StopTicks();
     lf_finalize();
     reply_ng(CMD_LF_EM4X70_INFO, status, tag.data, sizeof(tag.data));
+}
+
+
+void em4x70_write(em4x70_data_t *etd) {
+
+    uint8_t status = 0;
+    Dbprintf("Writing tag...");
+    command_parity = etd->parity;
+
+    init_tag();
+    EM4170_setup_read();
+
+    // Find the Tag
+    if (get_signalproperties() && find_EM4X70_Tag()) {
+        // Write
+
+        status = write(etd->word, etd->address) == PM3_SUCCESS;
+
+        /*
+        for(int i = 0; i<= 0x0F; i++) {
+            if(find_listen_window(true)) {
+                em4x70_send_nibble(i, false);
+                record_liw();
+                Dbprintf("Attempt command %02X", i);
+            }
+        }
+        */
+
+        if(status) {
+            // Read Tag
+            em4x70_read_id();
+            em4x70_read_um1();
+            em4x70_read_um2();
+        }
+
+    }
+
+    StopTicks();
+    lf_finalize();
+    reply_ng(CMD_LF_EM4X70_WRITE, status, tag.data, sizeof(tag.data));
 }
