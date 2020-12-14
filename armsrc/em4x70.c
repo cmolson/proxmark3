@@ -731,3 +731,41 @@ void em4x70_auth(em4x70_data_t *etd) {
     reply_ng(CMD_LF_EM4X70_AUTH, status, response, sizeof(response));
 }
 
+void em4x70_write_pin(em4x70_data_t *etd) {
+
+    uint8_t status = 0;
+
+    command_parity = etd->parity;
+
+    init_tag();
+    em4x70_setup_read();
+
+    // Find the Tag
+    if (get_signalproperties() && find_em4x70_Tag()) {
+
+        // Read ID (required for send_pin command)
+        if (em4x70_read_id()) {
+            // Write new PIN
+            if( write((etd->pin >> 16) & 0xFFFF, 10) == PM3_SUCCESS &&
+                write( etd->pin & 0xFFFF,        11) == PM3_SUCCESS) {
+
+                // Now Try to authenticate using the new PIN
+
+                // Send PIN
+                status = send_pin(etd->pin) == PM3_SUCCESS;
+
+                // If the write succeeded, read the rest of the tag
+                if (status) {
+                    // Read Tag
+                    // ID doesn't change
+                    em4x70_read_um1();
+                    em4x70_read_um2();
+                }
+            }
+        }
+    }
+
+    StopTicks();
+    lf_finalize();
+    reply_ng(CMD_LF_EM4X70_WRITEPIN, status, tag.data, sizeof(tag.data));
+}
