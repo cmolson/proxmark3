@@ -42,7 +42,7 @@ static bool command_parity = true;
 
 #define EM4X70_T_TAG_TIMEOUT                 (4 * EM4X70_T_TAG_FULL_PERIOD) // Timeout if we ever get a pulse longer than this
 #define EM4X70_T_WAITING_FOR_LIW             50 // Pulses to wait for listen window
-
+#define EM4X70_T_READ_HEADER_LEN             16 // Read header length (16 bit periods)
 
 #define EM4X70_COMMAND_RETRIES               5 // Attempts to send/read command
 #define EM4X70_MAX_RECEIVE_LENGTH           96 // Maximum bits to expect from any command
@@ -76,7 +76,7 @@ static uint8_t gLow  = LOW_SIGNAL_THRESHOLD;
 
 static uint8_t bits2byte(const uint8_t *bits, int length);
 static void bits2bytes(const uint8_t *bits, int length, uint8_t *out);
-static int em4x70_receive(uint8_t *bits);
+static int em4x70_receive(size_t length, uint8_t *bits);
 static bool find_listen_window(bool command);
 
 static void init_tag(void) {
@@ -332,8 +332,8 @@ static int authenticate(const uint8_t *rnd, const uint8_t *frnd, uint8_t *respon
 
         // Receive header, 20-bit g(RN), LIW
         uint8_t grnd[EM4X70_MAX_RECEIVE_LENGTH] = {0};
-        int num = em4x70_receive(grnd);
-        if (num < 10) {
+        int num = em4x70_receive(20, grnd);
+        if (num < 20) {
             Dbprintf("Auth failed");
             return PM3_ESOFT;
         }
@@ -372,7 +372,7 @@ static int send_pin(const uint32_t pin) {
             WaitTicks(EM4X70_T_TAG_WEE);
             // <-- Receive header + ID
             uint8_t tag_id[EM4X70_MAX_RECEIVE_LENGTH];
-            int num  = em4x70_receive(tag_id);
+            int num  = em4x70_receive(32, tag_id);
             if (num < 32) {
                 Dbprintf("Invalid ID Received");
                 return PM3_ESOFT;
@@ -483,7 +483,7 @@ static uint8_t bits2byte(const uint8_t *bits, int length) {
     return byte;
 }
 
-static bool send_command_and_read(uint8_t command, uint8_t resp_len_bits, uint8_t *out_bytes) {
+static bool send_command_and_read(uint8_t command, size_t resp_len_bits, uint8_t *out_bytes) {
 
     int retries = EM4X70_COMMAND_RETRIES;
     while (retries) {
@@ -492,7 +492,7 @@ static bool send_command_and_read(uint8_t command, uint8_t resp_len_bits, uint8_
         if (find_listen_window(true)) {
             uint8_t bits[EM4X70_MAX_RECEIVE_LENGTH] = {0};
             em4x70_send_nibble(command, command_parity);
-            int len = em4x70_receive(bits);
+            int len = em4x70_receive(resp_len_bits, bits);
             if (len < resp_len_bits) {
                 Dbprintf("Invalid data received length: %d", len);
                 return false;
@@ -546,7 +546,7 @@ static bool find_em4x70_Tag(void) {
     return find_listen_window(false);
 }
 
-static int em4x70_receive(uint8_t *bits) {
+static int em4x70_receive(size_t length, uint8_t *bits) {
 
     uint32_t pl;
     int bit_pos = 0;
@@ -561,10 +561,8 @@ static int em4x70_receive(uint8_t *bits) {
     WaitTicks(6 * EM4X70_T_TAG_FULL_PERIOD);
 
     // wait until we get the transition from 1's to 0's which is 1.5 full windows
-    int pulse_count = 0;
-    while (pulse_count < 12) {
+    for(int i = 0; i < EM4X70_T_READ_HEADER_LEN; i++) {
         pl = get_pulse_length(edge);
-        pulse_count++;
         if (check_pulse_length(pl, 3 * EM4X70_T_TAG_HALF_PERIOD)) {
             foundheader = true;
             break;
@@ -578,23 +576,26 @@ static int em4x70_receive(uint8_t *bits) {
 
     // Skip next 3 0's, header check consumes the first 0
     for (int i = 0; i < 3; i++) {
-        get_pulse_length(edge);
+        // If pulse length is not 1 bit, then abort early
+        if(!check_pulse_length(get_pulse_length(edge), EM4X70_T_TAG_FULL_PERIOD)) {
+            return 0;
+        }
     }
 
     // identify remaining bits based on pulse lengths
     // between listen windows only pulse lengths of 1, 1.5 and 2 are possible
-    while (bit_pos < EM4X70_MAX_RECEIVE_LENGTH) {
+    while (bit_pos < length) {
 
         pl = get_pulse_length(edge);
 
         if (check_pulse_length(pl, EM4X70_T_TAG_FULL_PERIOD)) {
 
-            // pulse length = 1
+            // pulse length 1 -> assign bit
             bits[bit_pos++] = edge == FALLING_EDGE ? 1 : 0;
 
         } else if (check_pulse_length(pl, 3 * EM4X70_T_TAG_HALF_PERIOD)) {
 
-            // pulse length = 1.5 -> flip edge detection
+            // pulse length 1.5 -> 2 bits + flip edge detection
             if (edge == FALLING_EDGE) {
                 bits[bit_pos++] = 0;
                 bits[bit_pos++] = 0;
@@ -607,7 +608,7 @@ static int em4x70_receive(uint8_t *bits) {
 
         } else if (check_pulse_length(pl, 2 * EM4X70_T_TAG_FULL_PERIOD)) {
 
-            // pulse length of 2
+            // pulse length of 2 -> two bits
             if (edge == FALLING_EDGE) {
                 bits[bit_pos++] = 0;
                 bits[bit_pos++] = 1;
@@ -616,16 +617,13 @@ static int em4x70_receive(uint8_t *bits) {
                 bits[bit_pos++] = 0;
             }
 
-        } else if (((edge == FALLING_EDGE) && check_pulse_length(pl, (2*EM4X70_T_TAG_FULL_PERIOD) + EM4X70_T_TAG_FULL_PERIOD)) ||
-                   ((edge == RISING_EDGE) && check_pulse_length(pl, (2*EM4X70_T_TAG_FULL_PERIOD) + EM4X70_T_TAG_HALF_PERIOD))) {
-
-            // LIW detected (either invert or normal)
-            return --bit_pos;
+        } else {
+            // Listen Window, or invalid bit
+            break;
         }
     }
 
-    // Should not get here
-    return --bit_pos;
+    return bit_pos;
 }
 
 void em4x70_info(em4x70_data_t *etd) {
